@@ -45,7 +45,7 @@ NUS_LW_DEF = np.linspace(50.0, 3000.0, NNU_DEF)
 NUS_SW_DEF = np.linspace(1000.0, 45000.0, NNU_DEF)
 
 # default spectroscopic params
-# shape is (2 triangles, 4 parameters) - same as Fortran shape=[3,4]
+# shape is (3 triangles, 4 parameters) - same as Fortran shape=[3,4]
 # columns: [gas_index, kappa_0, nu_0, l]
 TRIANGLE_PARAMS_DEF_LW = np.array([
   [1., 282., 0., 64.],
