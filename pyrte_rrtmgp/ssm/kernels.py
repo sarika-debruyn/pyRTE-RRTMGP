@@ -1,8 +1,13 @@
-# contains standalone functions where you hand over arrays and it hands back arrays
-# contains three core computations that need to happen everytime compute() from gas_optics.py is called
-# 1. How much gas is in each layer (mass calculation)
-# 2. How opaque each layer is at each wavelength (optical depth)
-# 3. How much radiation each layer emits at its temperature (Planck function)
+"""
+This module contains the core mathematical functions of the SSM, translated directly from mo_optics_ssm_kernels.F90.
+
+References
+----------
+Williams, A. I. L. (2026). Bridging clarity and accuracy: A simple spectral
+longwave radiation scheme for idealized climate modeling.
+Journal of Advances in Modeling Earth Systems, 18, e2025MS005405.
+https://doi.org/10.1029/2025MS005405
+"""
 
 import numpy as np
 from .defaults import PLANCK_H, LIGHTSPEED, BOLTZMANN_K, GRAV
