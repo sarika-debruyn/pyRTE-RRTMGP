@@ -10,6 +10,8 @@ https://doi.org/10.1029/2025MS005405
 """
 
 import numpy as np
+import xarray as xr
+
 from .defaults import PLANCK_H, LIGHTSPEED, BOLTZMANN_K, GRAV
 
 """
@@ -33,23 +35,32 @@ Returns:
         Reference absorption coefficients [m^2 kg^-1] at each wavenumber,
         evaluated at the reference pressure and temperature defined in defaults.py.
 """
-def compute_absorption_coeffs(triangle_params: np.ndarray, nus: np.ndarray. n_gases: int) -> np.ndarray:
-  
-  # set up output array
-  n_nu = len(nus)
-  absorption_coeffs = np.zeros((n_gases, n_nu), dtype=float)
 
-  # loop over triangles to obtain their parameters
-  for row in triangle_params:
-    gas_idx = int(row[0]) - 1 #convert from 1-based Fortran to 0-based Python
-    kappa0 = row[1]
-    nu0 = row[2]
-    l = row[3]
+def compute_absorption_coeffs(
+    triangle_params: xr.DataArray,
+    nus: xr.DataArray,
+    gas_names,
+) -> xr.DataArray:
+    absorption_coeffs = xr.DataArray(
+        np.zeros((len(gas_names), nus.sizes["gpt"]), dtype=float),
+        dims=("gas", "gpt"),
+        coords={"gas": list(gas_names), "gpt": nus["gpt"]},
+        name="absorption_coeffs",
+        attrs={"units": "m2 kg-1"},
+    )
 
-    # derived from lines 300-307 in mo_optics_ssm.F90
-    absorption_coeffs[gas_idx, :] += kappa0 * np.exp(-np.abs(nus - nu0) / l)
+    for row in triangle_params.values:
+        gas = gas_names[int(row[0]) - 1]
+        kappa0 = row[1]
+        nu0 = row[2]
+        ell = row[3]
 
-  return absorption_coeffs
+        absorption_coeffs.loc[dict(gas=gas)] += (
+            kappa0 * np.exp(-abs(nus - nu0) / ell)
+        )
+
+    return absorption_coeffs
+
 
 
 """
@@ -70,15 +81,29 @@ Returns:
   layer_mass: np.ndarray, shape (n_gases, n_col, n_lay)
       Mass of each gas in each layer [kg m^-2]
 """
-def compute_layer_mass(vmr: np.ndarray, plev: np.ndarray, mol_weights: np.ndarray, m_dry: float = 0.029) -> np.ndarray:
-    # pressure thickness of each layer
-    dp = np.abs(plev[:, 1:] - plev[:, :-1]) #always positive
 
-    # mol_weights has shape (n_gases,); broadcast to (n_gases, n_col, n_lay)
-    # dp has shape (n_col, n_lay); broadcast by adding a leading axis
-    mmr = vmr * (mol_weights[:, np.newaxis, np.newaxis] / m_dry)
-    layer_mass = mmr * dp[np.newaxis, :, :] / GRAV
- 
+def compute_layer_mass(
+    vmr: xr.DataArray,
+    plev: xr.DataArray,
+    play: xr.DataArray,
+    mol_weights: xr.DataArray,
+    m_dry: float = 0.029,
+) -> xr.DataArray:
+    _, lev_dim = plev.dims
+    _, lay_dim = play.dims
+
+    dp = abs(plev.diff(lev_dim))
+    dp = dp.rename({lev_dim: lay_dim})
+
+    if lay_dim in play.coords:
+        dp = dp.assign_coords({lay_dim: play[lay_dim]})
+
+    mmr = vmr * (mol_weights / m_dry)
+    layer_mass = mmr * dp / GRAV
+
+    layer_mass.name = "layer_mass"
+    layer_mass.attrs["units"] = "kg m-2"
+
     return layer_mass
 
 
@@ -108,24 +133,21 @@ Returns:
   tau: np.ndarray, shape (n_col, n_lay, n_nu)
       Absorption optical depth [dimensionless]
 """
-def compute_tau(absorption_coeffs: np.ndarray, play: np.ndarray, pref: float, layer_mass: np.ndarray) -> np.ndarray:
+def compute_tau(
+    absorption_coeffs: xr.DataArray,
+    play: xr.DataArray,
+    pref: float,
+    layer_mass: xr.DataArray,
+) -> xr.DataArray:
+    if pref != 0.0:
+        p_scaling = play / pref
+    else:
+        p_scaling = xr.ones_like(play)
 
-  #pressure broadening factor: shape (n_col, n_lay)
-  if pref != 0.0:
-    p_scaling = play / pref
-  else:
-    p_scaling = np.ones_like(play)
+    tau = p_scaling * (layer_mass * absorption_coeffs).sum("gas")
+    tau.name = "tau"
 
-  # sum over gases: layer_mass (n_gases, n_col, n_lay), absorption_coeffs (n_gases, n_nu)
-  # we want result (n_col, n_lay, n_nu)
-  # for each gas g: contribution(col, lay, nu) = layer_mass(g, col, lay) * kappa(g, nu)
-  # use Einstein summation: 'gcl, gn -> cln'
-  gas_weighted = np.einsum('gcl,gn->cln', layer_mass, absorption_coeffs)
-
-  # apply pressure broadening: p_scaling is (n_col, n_lay), result is (l, n_lay, n_nu)
-  tau = p_scaling[:, :, np.newaxis] * gas_weighted
-
-  return tau
+    return tau
 
 
 """
@@ -147,19 +169,34 @@ Returns:
       band_lims[0, i] = lower edge of band i
       band_lims[1, i] = upper edge of band i
 """
-def compute_band_limits(nus: np.ndarray, nu_min: float, nu_max: float) -> np.ndarray:
-  n_nu = len(nus) #default case is 42 wavenumber points
-  band_lims = np.empty((2, n_nu), dtype=float) #empty 2D array, two rows and one column per wavenumber point
+def compute_band_limits(
+    nus: xr.DataArray,
+    nu_min: float,
+    nu_max: float,
+) -> xr.DataArray:
+    nu_values = nus.values
+    midpoints = 0.5 * (nu_values[:-1] + nu_values[1:])
 
-  # lower edges: nu_min for the first band, midpoints for the rest
-  band_lims[0, 0] = nu_min
-  band_lims[0, 1:] = 0.5 * (nus[:-1] + nus[1:])
+    lower = np.empty_like(nu_values, dtype=float)
+    upper = np.empty_like(nu_values, dtype=float)
 
-  # upper edges: midpoints for all but last, nu_max for last
-  band_lims[1, :-1] = 0.5 * (nus[:-1] + nus[1:])
-  band_lims[1, -1] = nu_max
+    lower[0] = nu_min
+    lower[1:] = midpoints
 
-  return band_lims
+    upper[:-1] = midpoints
+    upper[-1] = nu_max
+
+    return xr.DataArray(
+        np.stack([lower, upper], axis=0),
+        dims=("band_edge", "gpt"),
+        coords={
+            "band_edge": ["lower", "upper"],
+            "gpt": nus["gpt"],
+        },
+        name="band_lims",
+        attrs={"units": "cm^-1"},
+    )
+
 
 """
 planck_function() calculates how much radiation a perfect blackbody emits at wavelength nu given temperature T, 
@@ -179,14 +216,11 @@ Returns:
   B: np.ndarray, same shape as T
     Spectral radiance [ W m^-2 sr^-1 (cm^-1)^-1]
 """
-def planck_function(T: np.ndarray, nu: float) -> np.ndarray:
-  nu_si = nu 100.0 #convert cm^-1 to m^-1
-  numerator = 100.0 * 2.0 * PLANCK_H * (nu_si ** 3) * (LIGHTSPEED ** 2)
-  
-  exponent = (PLANC_H * LIGHTSPEED * nu_si) / (BOLTZMANN_K * T)
-  denominator = np.exp(exponent) - 1.0 
-  
-  return numerator / denominator
+def planck_function(T: xr.DataArray, nu: xr.DataArray) -> xr.DataArray:
+    nu_si = nu / 100.0
+    numerator = 100.0 * 2.0 * PLANCK_H * (nu_si ** 3) * (LIGHTSPEED ** 2)
+    exponent = (PLANCK_H * LIGHTSPEED * nu_si) / (BOLTZMANN_K * T)
+    return numerator / (np.exp(exponent) - 1.0)
 
 
 """
@@ -212,16 +246,15 @@ Returns:
       Shape (..., n_nu) where ... matches the shape of T
       Band-integrated Planck radiance [W m^-2 sr^-1]   
 """
-def compute_planck_source(T: np.ndarray, nus: np.ndarray, dnus: np.ndarray) -> np.ndarray:
-  # T has shape (...), we need to evalute B_nu at each wavenumber
-  # Add a trailing axist to T so it broadcasts against nus
-  T_expanded = T[..., np.newaxis] #(..., 1)
-
-  #nus and dnus have shape (n_nu), broadcast against T_expanded -> (..., n_nu)
-  source = planck_function(T_expanded, nus) * dnus
-
-  return source
-
+def compute_planck_source(
+    T: xr.DataArray,
+    nus: xr.DataArray,
+    dnus: xr.DataArray,
+) -> xr.DataArray:
+    source = planck_function(T, nus) * dnus
+    source.name = "planck_source"
+    source.attrs["units"] = "W m-2 sr-1"
+    return source
 
 
   
