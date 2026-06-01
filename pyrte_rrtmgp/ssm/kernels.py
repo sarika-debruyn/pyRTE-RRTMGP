@@ -41,23 +41,14 @@ def compute_absorption_coeffs(
     nus: xr.DataArray,
     gas_names,
 ) -> xr.DataArray:
-    absorption_coeffs = xr.DataArray(
-        np.zeros((len(gas_names), nus.sizes["gpt"]), dtype=float),
-        dims=("gas", "gpt"),
-        coords={"gas": list(gas_names), "gpt": nus["gpt"]},
-        name="absorption_coeffs",
-        attrs={"units": "m2 kg-1"},
-    )
+  
+    nu0 = triangles.sel(param="nu0")
+    ell = triangles.sel(param="l")
+    kappa0 = triangles.sel(param="kappa0")
 
-    for row in triangle_params.values:
-        gas = gas_names[int(row[0]) - 1]
-        kappa0 = row[1]
-        nu0 = row[2]
-        ell = row[3]
-
-        absorption_coeffs.loc[dict(gas=gas)] += (
-            kappa0 * np.exp(-abs(nus - nu0) / ell)
-        )
+    absorption_coeffs = kappa0 * np.exp(-abs(nus - nu0) / ell)
+    absorption_coeffs = absorption_coeffs.rename("absorption_coeffs")
+    absorption_coeffs.attrs["units"] = "m2 kg-1"
 
     return absorption_coeffs
 
