@@ -150,53 +150,6 @@ def compute_tau(
     return tau
 
 
-"""
-compute_band_limits() constructs wavenumber band edges from a set of central wavenumbers
-
-  This is a direct translation of lines 258-277 from mo_optics_ssm.F90
-  The Fortran places band edges at the midpoints between adjacent nus, with the first band starting at nu_min and the last ending at nu_max
-
-Parameters:
-  nus: np.ndarray, shape (n_nu)
-      Central wavenumbers [cm^-1]
-  nu_min: float
-      Lower bound of the spectrum [cm^-1]
-  nu_max: float
-      Upper bound of the spectrum [cm^-1]
-
-Returns:
-  band_lims: np.ndarray, shape (2, n_nu)
-      band_lims[0, i] = lower edge of band i
-      band_lims[1, i] = upper edge of band i
-"""
-def compute_band_limits(
-    nus: xr.DataArray,
-    nu_min: float,
-    nu_max: float,
-) -> xr.DataArray:
-    nu_values = nus.values
-    midpoints = 0.5 * (nu_values[:-1] + nu_values[1:])
-
-    lower = np.empty_like(nu_values, dtype=float)
-    upper = np.empty_like(nu_values, dtype=float)
-
-    lower[0] = nu_min
-    lower[1:] = midpoints
-
-    upper[:-1] = midpoints
-    upper[-1] = nu_max
-
-    return xr.DataArray(
-        np.stack([lower, upper], axis=0),
-        dims=("band_edge", "gpt"),
-        coords={
-            "band_edge": ["lower", "upper"],
-            "gpt": nus["gpt"],
-        },
-        name="band_lims",
-        attrs={"units": "cm^-1"},
-    )
-
 
 """
 planck_function() calculates how much radiation a perfect blackbody emits at wavelength nu given temperature T, 
