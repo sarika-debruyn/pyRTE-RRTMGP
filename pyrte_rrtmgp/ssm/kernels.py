@@ -135,7 +135,7 @@ def compute_tau(
     else:
         p_scaling = xr.ones_like(play)
 
-    tau = p_scaling * (layer_mass * absorption_coeffs).sum("gas")
+    tau = p_scaling * (layer_mass * absorption_coeffs).sum("tag")
     tau.name = "tau"
 
     return tau
