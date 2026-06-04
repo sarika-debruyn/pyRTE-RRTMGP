@@ -8,42 +8,44 @@ from .kernels import (
     compute_planck_source,
     compute_tau,
 )
+"""
+    Longwave gas-optics calculator for the Simple Spectral Model.
 
+    The class stores spectral absorption data, wavenumber grid information,
+    and molecular weights, then computes optical depth and Planck source
+    terms from atmospheric xarray inputs.
+"""
 class GasOptics:
+    
+    """
+    Initialize gas-optics data for longwave calculations.
+
+    Parameters
+    ----------
+    atmos_data:
+        Dataset containing ``triangles`` with dimensions ``("tags", "params")``. 
+        Parameters are ``"nu0"``, ``"l"``, and ``"kappa0"``.
+
+    nus:
+
+    dnus:
+        
+    pref:
+        
+    """
     def __init__(
         self,
-        optics_data: xr.Dataset,
+        atmos_data: xr.Dataset,
         nus: xr.DataArray,
         dnus: xr.DataArray,
         pref=1.0e5,
     ):
-        self.optics_data = optics_data
-        self.triangles = optics_data["triangles"].rename(
-            {"tags": "tag", "params": "param"}
-        )
-
-        self.nus = nus
-        self.dnus = dnus
-        self.pref = float(pref)
-
-        self.tags = tuple(str(tag) for tag in self.triangles.coords["tag"].values)
-
-        self.gases_by_tag = xr.DataArray(
-            [tag.split("-")[0] for tag in self.tags],
-            dims=("tag",),
-            coords={"tag": self.tags},
-            name="gas",
-        )
-
-        self.mol_weights_by_tag = xr.DataArray(
-            [MOL_WEIGHTS[str(gas)] for gas in self.gases_by_tag.values],
-            dims=("tag",),
-            coords={
-                "tag": self.tags,
-                "gas": ("tag", self.gases_by_tag.values),
-            },
-            name="mol_weights",
-            attrs={"units": "kg mol^-1"},
+        
+        self._init_inputs(
+        atmos_data=atmos_data,
+        nus=nus,
+        dnus=dnus,
+        pref=pref,
         )
 
         self._validate_inputs()
@@ -52,20 +54,36 @@ class GasOptics:
             triangles=self.triangles,
             nus=self.nus,
         )
-    #delete this if all input data are already set up in ideal shape
-    def _init_inputs(self, atmos_data, nus, nu_min, nu_max, pref):
-        self.tags = tuple(str(tag).lower() for tag in atmos_data.coords["tags"].values)
+    """
+    Normalize and store constructor inputs.
+
+    Not sure if we really need this. 
+    If all the inputs are expected to be in form of xarray dataset, this is then useless.
+
+    """
+    def _init_inputs(self, atmos_data, nus, dnus, pref):
+    
+        self.atmos_data = atmos_data
+
+        self.triangles = atmos_data["triangles"].rename(
+            {"tags": "tag", "params": "param"}
+        )
+
+        self.tags = tuple(
+            str(tag).lower() for tag in self.triangles.coords["tag"].values
+        )
+
         self.gases_by_tag = xr.DataArray(
             [tag.split("-")[0] for tag in self.tags],
             dims=("tag",),
             coords={"tag": self.tags},
             name="gas",
         )
-        self.gases = tuple(dict.fromkeys(self.gases_by_tag.values))
 
-        self.triangles = atmos_data["triangles"].rename(
-            {"tags": "tag", "params": "param"}
+        self.gases = tuple(
+            dict.fromkeys(str(gas) for gas in self.gases_by_tag.values)
         )
+
         self.triangles = self.triangles.assign_coords(
             tag=self.tags,
             gas=("tag", self.gases_by_tag.values),
@@ -78,8 +96,14 @@ class GasOptics:
             attrs={"units": "cm^-1"},
         )
 
-        self.nu_min = float(nu_min)
-        self.nu_max = float(nu_max)
+        self.dnus = xr.DataArray(
+            dnus,
+            dims=("gpt",),
+            coords={"gpt": self.nus["gpt"]},
+            name="dnus",
+            attrs={"units": "cm^-1"},
+        )
+
         self.pref = float(pref)
 
         self.mol_weights_by_tag = xr.DataArray(
@@ -92,17 +116,56 @@ class GasOptics:
             name="mol_weights",
             attrs={"units": "kg mol^-1"},
         )
+    """
+    Compute longwave optical depth and Planck source terms.
 
-    def compute(self, atmos: xr.Dataset) -> xr.Dataset:
-        play = atmos["play"]
-        plev = atmos["plev"]
-        tlay = atmos["tlay"]
-        tlev = atmos["tlev"]
-        tsfc = atmos["tsfc"]
+    Parameters
+    ----------
+    pres_level:
+        Pressure at layer interfaces, with dimensions
+        ``(column_dim, level_dim)``.
 
-        vmr = xr.concat(
-            [atmos[gas] for gas in self.gases_by_tag.values],
-            dim=xr.IndexVariable("tag", self.tags),
+    pres_layer:
+        Pressure at layer centers, with dimensions
+        ``(column_dim, layer_dim)``.
+
+    temp_level:
+        Temperature at layer interfaces, with dimensions
+        ``(column_dim, level_dim)``.
+
+    temp_layer:
+        Temperature at layer centers, with dimensions
+        ``(column_dim, layer_dim)``.
+
+    surface_temperature:
+        Surface temperature, typically with dimension ``column_dim``.
+
+    vmr:
+        Dataset containing volume mixing ratio fields for each physical gas.
+        For example, tags ``"h2o-rot"`` and ``"h2o-cont"`` both use
+        ``vmr["h2o"]``.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset containing ``tau``, ``lay_source``, ``lev_source``,
+        ``sfc_source``, ``nus``, and ``dnus``.
+    """
+
+    def compute(
+            self, 
+            pres_level: xr.DataArray,
+            pres_layer: xr.DataArray,
+            temp_level: xr.DataArray,
+            temp_layer: xr.DataArray,
+            surface_temperature: xr.DataArray,
+            vmr: xr.Dataset,
+    ) -> xr.Dataset:
+        
+        
+
+        vmr_by_tag = vmr_by_tag.assign_coords(
+            gas=("tag", self.gases_by_tag.values),
         )
 
         vmr = vmr.assign_coords(
@@ -111,28 +174,51 @@ class GasOptics:
 
         layer_mass = compute_layer_mass(
             vmr=vmr,
-            plev=plev,
-            play=play,
+            plev=pres_level,
+            play=pres_layer,
             mol_weights=self.mol_weights_by_tag,
         )
 
         tau = compute_tau(
             absorption_coeffs=self.absorption_coeffs,
-            play=play,
+            play=pres_layer,
             pref=self.pref,
             layer_mass=layer_mass,
         )
 
-        return atmos.assign(
-            tau=tau,
-            lay_source=compute_planck_source(tlay, self.nus, self.dnus),
-            lev_source=compute_planck_source(tlev, self.nus, self.dnus),
-            sfc_source=compute_planck_source(tsfc, self.nus, self.dnus),
-            nus=self.nus,
-            dnus=self.dnus,
+        return xr.Dataset(
+        data_vars={
+            "tau": tau,
+            "lay_source": compute_planck_source(
+                temp_layer,
+                self.nus,
+                self.dnus,
+            ),
+            "lev_source": compute_planck_source(
+                temp_level,
+                self.nus,
+                self.dnus,
+            ),
+            "sfc_source": compute_planck_source(
+                surface_temperature,
+                self.nus,
+                self.dnus,
+            ),
+            "nus": self.nus,
+            "dnus": self.dnus,
+        }
         )
 
+    """
+    Validate initialized gas-optics inputs.
+
+    Checks that tags are unique, gases have known molecular weights,
+    triangle parameters are complete and finite, spectral grids are one
+    dimensional and aligned, and all physical quantities have valid ranges.
+    """
+
     def _validate_inputs(self):
+        
         if len(self.tags) == 0:
             raise ValueError("optics_data must contain at least one tag")
 
