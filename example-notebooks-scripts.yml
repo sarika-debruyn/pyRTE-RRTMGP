@@ -6,7 +6,7 @@ channels:
   - conda-forge
   - nodefaults
 dependencies:
-  - python >=3.11,<3.13
+  - python >=3.11,<3.15
   - rte_rrtmgp
   - dask
   - typing_extensions
@@ -14,3 +14,4 @@ dependencies:
   - jupytext
   - cmake
   - ninja
+  - pip
